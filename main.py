@@ -51,6 +51,31 @@ def add_expense():
     )
 
 
+@app.route('/update_expense/<int:id>', methods=['GET', 'POST'])
+def update_expense(id):
+    expense_to_update = ExpenseTracker.query.get_or_404(id)
+    if request.method == 'POST':
+        expense_to_update.name = request.args.get('name', expense_to_update.name)
+        expense_to_update.category = request.args.get('category', expense_to_update.category)
+        expense_to_update.amount = request.args.get('amount', expense_to_update.amount)
+
+        db.session.commit()
+
+        return jsonify(
+        f'Expense: {expense_to_update.name}',
+        f'Category: {expense_to_update.category}',
+        f'Amount: {expense_to_update.amount}',
+    )
+
+@app.route('/delete_expense/<int:id>', methods=['DELETE'])
+def delete_expense(id):
+    expense_to_delete = ExpenseTracker.query.get_or_404(id)
+    if request.method == 'DELETE':
+        db.session.delete(expense_to_delete)
+        db.session.commit()
+
+    return jsonify(f'{expense_to_delete.name} expense deleted successfully!')
+
 @app.route('/get_expenses', methods=['GET', 'POST'])
 def get_expenses():
     expenses = ExpenseTracker.query.all()
