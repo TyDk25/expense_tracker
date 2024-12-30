@@ -2,7 +2,7 @@ import requests
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase, mapped_column
-from sqlalchemy import Integer, String
+from sqlalchemy import Integer, String, func
 from pathlib import Path
 
 db_name = Path(__file__).parent / 'expense_tracker.db'
@@ -62,10 +62,11 @@ def update_expense(id):
         db.session.commit()
 
         return jsonify(
-        f'Expense: {expense_to_update.name}',
-        f'Category: {expense_to_update.category}',
-        f'Amount: {expense_to_update.amount}',
-    )
+            f'Expense: {expense_to_update.name}',
+            f'Category: {expense_to_update.category}',
+            f'Amount: {expense_to_update.amount}',
+        )
+
 
 @app.route('/delete_expense/<int:id>', methods=['DELETE'])
 def delete_expense(id):
@@ -75,6 +76,16 @@ def delete_expense(id):
         db.session.commit()
 
     return jsonify(f'{expense_to_delete.name} expense deleted successfully!')
+
+
+@app.route('/check_categories/<string:category>', methods=['POST'])
+def check_categories(category):
+    category_to_check = db.session.query(func.sum(ExpenseTracker.amount)).filter(
+        ExpenseTracker.category == category
+    ).scalar()
+
+    return jsonify(f'Amount Spent on {category}: {category_to_check}')
+
 
 @app.route('/get_expenses', methods=['GET', 'POST'])
 def get_expenses():
