@@ -1,4 +1,5 @@
 import requests
+import sqlalchemy
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase, mapped_column
@@ -85,6 +86,22 @@ def check_categories(category):
     ).scalar()
 
     return jsonify(f'Amount Spent on {category}: {category_to_check}')
+
+
+@app.route('/expensive_category', methods=['POST'])
+def check_expensive_category():
+    expensive = db.session.query(ExpenseTracker.category, func.sum(ExpenseTracker.amount).label('Total')).group_by(ExpenseTracker.category).all()
+    results = [
+        {
+            "Category": i.category,
+            "Amount": i.Total
+
+        }
+        for i in expensive
+    ]
+    return jsonify(results)
+
+
 
 
 @app.route('/get_expenses', methods=['GET', 'POST'])
