@@ -18,11 +18,12 @@ db = SQLAlchemy(model_class=Base)
 
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = f'sqlite:///{db_name}'
+app.json.sort_keys = False
 db.init_app(app)
 
 
 class ExpenseTracker(db.Model):
-    id = mapped_column(Integer, primary_key=True)
+    id = mapped_column(Integer, primary_key=True, autoincrement=True)
     name = mapped_column(String, nullable=False)
     category = mapped_column(String, nullable=False)
     amount = mapped_column(Integer, nullable=False)
@@ -31,7 +32,7 @@ class ExpenseTracker(db.Model):
 
 class Budget(db.Model):
     __tablename__ = 'budget'
-    id = mapped_column(Integer, primary_key=True, default=1)
+    id = mapped_column(Integer,autoincrement=True,primary_key=True, default=1)
     budget = mapped_column(Float, nullable=False)
     remaining_budget = mapped_column(Float, nullable=False)
     __table_args__ = (
@@ -43,43 +44,60 @@ with app.app_context():
     db.create_all()
     print('Created db')
 
+
 @app.route('/set_budget', methods=['POST'])
 def set_budget():
-    total_budget = request.args.get('budget', 0)
-    data = Budget(
-        budget=total_budget,
-        remaining_budget=total_budget
-    )
+    total_budget = float(request.args.get('budget'))
 
-    db.session.add(data)
+    budget = Budget.query.first()
+
+    if budget:
+        budget.budget = total_budget
+        budget.remaining_budget = total_budget
+    else:
+        budget = Budget(budget=total_budget, remaining_budget=total_budget)
+        db.session.add(budget)
 
     db.session.commit()
 
     return jsonify({
-        "Total Budget": total_budget,
-        "Remaining Budget": total_budget
+        "Total Budget": budget.budget,
+        "Remaining Budget": budget.remaining_budget
+    }), 200
 
-    })
+
+@app.route('/update_budget', methods=['POST'])
+def update_budget():
+    updated_budget = float(request.args.get('new budget', 0))
+    budget = Budget.query.first()
+
+    if budget:
+        budget.budget = updated_budget
+        budget.remaining_budget = updated_budget
+        db.session.commit()
+        return jsonify({
+            "Message": 'Budget updated successfully!',
+            "Updated Budget": budget.budget
+        }), 200
+
+    else:
+        return jsonify({"message": "No budget set."}), 404
+
+
 @app.route('/get_budget', methods=['GET'])
-def total_budget():
-    total_budget = request.args.get('budget')
-    return jsonify(total_budget)
-
-
-@app.route('/remaining_budget', methods=['GET'])
-def remaining_budget():
-    budget = total_budget().get_json()['budget']
-    total_spent = get_total_spent().get_json()['Total Spent']
-    remaining_left = budget - total_spent
-
-    return jsonify(remaining_left)
+def get_budget():
+    budget = Budget.query.first()
+    if budget:
+        return jsonify({"Total Budget": budget.budget, 'Remaining Budget': budget.remaining_budget}), 200
+    else:
+        return jsonify({"message": "No Budget Set"}), 404
 
 
 @app.route('/add_expense', methods=['GET', 'POST'])
 def add_expense():
     expense_name = request.args.get('name').title()
     category = request.args.get('category').title()
-    amount = request.args.get('amount').title()
+    amount = float(request.args.get('amount'))
     now = datetime.today()
     data = ExpenseTracker(
         name=expense_name,
@@ -88,14 +106,33 @@ def add_expense():
         date=now
     )
     db.session.add(data)
+    budget = Budget.query.first()
+    if budget:
+        if budget.remaining_budget > 0:
+            budget.remaining_budget -= amount
+        else:
+            return jsonify({"Message": f"Your budget does not allow for this expense!",
+
+                            'Your Remaining Budget':
+                                {
+                                'Remaining Budget': budget.remaining_budget,
+                                'Expense price that you want to add': amount
+                                }
+
+                            }), 404
     db.session.commit()
 
-    return jsonify(
-        f'Expense: {expense_name}',
-        f'Category: {category}',
-        f'Amount: {amount}',
-        f'Date: {now.date()}'
-    )
+    return jsonify({
+        'Message': f'Expense {expense_name} added successfully.',
+        'Expenses': {
+            'Expense': expense_name,
+            'Category': category,
+            'Amount': amount,
+            'Date': now.date(),
+            'Remaining Budget': budget.remaining_budget
+        }
+    }
+    ), 200
 
 
 @app.route('/update_expense/<int:id>', methods=['GET', 'POST'])
@@ -109,10 +146,15 @@ def update_expense(id):
         db.session.commit()
 
         return jsonify(
-            f'Expense: {expense_to_update.name}',
-            f'Category: {expense_to_update.category}',
-            f'Amount: {expense_to_update.amount}'
-        )
+            {
+                "message": "Updated Expense",
+                "Expense Updated": {
+                    "Expense": expense_to_update.name,
+                    "Category": expense_to_update.category,
+                    "Amount": expense_to_update.amount
+                }
+            }
+        ), 200
 
 
 @app.route('/delete_expense/<int:id>', methods=['DELETE'])
@@ -122,19 +164,23 @@ def delete_expense(id):
         db.session.delete(expense_to_delete)
         db.session.commit()
 
-    return jsonify(f'{expense_to_delete.name} expense deleted successfully!')
+    return jsonify({
+        'Message': f'{expense_to_delete.name} removed successfully!'
+    })
 
 
-@app.route('/check_categories/<string:category>', methods=['POST'])
+@app.route('/check_categories/<string:category>', methods=['GET'])
 def check_categories(category):
     category_to_check = db.session.query(func.sum(ExpenseTracker.amount)).filter(
         ExpenseTracker.category == category
     ).scalar()
 
-    return jsonify(f'Amount Spent on {category}: {category_to_check}')
+    return jsonify({
+        f"Amount Spent On {category}": category_to_check
+    })
 
 
-@app.route('/expensive_category', methods=['POST'])
+@app.route('/expensive_category', methods=['GET'])
 def check_expensive_category():
     expensive = db.session.query(ExpenseTracker.category, func.sum(ExpenseTracker.amount).label('Total')).group_by(
         ExpenseTracker.category).all()
@@ -146,7 +192,9 @@ def check_expensive_category():
         }
         for i in expensive
     ]
-    return jsonify(results)
+    return jsonify({
+        "Costly Categories": results
+    })
 
 
 @app.route('/get_total_spend', methods=['GET'])
@@ -160,7 +208,10 @@ def get_total_spent():
         for i in total_spent
     ]
 
-    return jsonify(results)
+    return jsonify({
+        "Total Spent": results
+    })
+
 
 @app.route('/get_expenses', methods=['GET', 'POST'])
 def get_expenses():
@@ -174,7 +225,9 @@ def get_expenses():
         }
         for i in expenses
     ]
-    return jsonify(results)
+    return jsonify({
+        "Expenses": results
+    })
 
 
 @app.route('/clear_table', methods=['DELETE'])
@@ -184,7 +237,9 @@ def clear_data():
         db.session.execute(table.delete())
     db.session.commit()
 
-    return jsonify('Data cleared')
+    return jsonify({
+      "Message": "Tables Cleared"
+    })
 
 
 if __name__ == '__main__':
