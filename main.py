@@ -8,7 +8,6 @@ from datetime import datetime
 from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
 import os
-from flask_ngrok import run_with_ngrok
 load_dotenv('.env')
 os.getenv('SECRET_KEY')
 app = Flask(__name__)
