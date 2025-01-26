@@ -1,11 +1,14 @@
 import requests
 import sqlalchemy
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.orm import DeclarativeBase, mapped_column
+from sqlalchemy.orm import DeclarativeBase, mapped_column, Session
 from sqlalchemy import Integer, String, func, Float
 from pathlib import Path
 from datetime import datetime
+from twilio.twiml.messaging_response import MessagingResponse
+import os
+from dotenv import load_dotenv
 
 db_name = Path(__file__).parent / 'expense_tracker.db'
 
@@ -15,9 +18,10 @@ class Base(DeclarativeBase):
 
 
 db = SQLAlchemy(model_class=Base)
-
+load_dotenv('.env')
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = f'sqlite:///{db_name}'
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 app.json.sort_keys = False
 db.init_app(app)
 
@@ -32,8 +36,8 @@ class ExpenseTracker(db.Model):
 
 class Budget(db.Model):
     __tablename__ = 'budget'
-    id = mapped_column(Integer,autoincrement=True,primary_key=True, default=1)
-    budget = mapped_column(Float, nullable=False)
+    id = mapped_column(Integer, autoincrement=True, primary_key=True, default=1)
+    budget = mapped_column(Float, nullable=True)
     remaining_budget = mapped_column(Float, nullable=False)
     __table_args__ = (
         db.UniqueConstraint('id', name='unique_record_constraint'),
@@ -115,8 +119,8 @@ def add_expense():
 
                             'Your Remaining Budget':
                                 {
-                                'Remaining Budget': budget.remaining_budget,
-                                'Expense price that you want to add': amount
+                                    'Remaining Budget': budget.remaining_budget,
+                                    'Expense price that you want to add': amount
                                 }
 
                             }), 404
@@ -230,6 +234,107 @@ def get_expenses():
     })
 
 
+@app.route("/sms", methods=['GET', 'POST'])
+def incoming_sms():
+    """Send a dynamic reply to an incoming text message"""
+    # Get the message the user sent our Twilio number
+    body = request.values.get('Body', None)
+    if 'track_flow' not in session:
+        session['track_flow'] = 0
+    print(session['track_flow'])
+    if 'expense' not in session:
+        session['expense'] = {}
+    # TODO: Add queries for budget/remaining_budget once.
+    # TODO: Create a response to when the session state returns to 0.
+    # Start our TwiML response
+    resp = MessagingResponse()
+    if session['track_flow'] == 0:
+        if body == 'hello':
+            session['track_flow'] = 1
+            resp.message('Welcome, Please Choose From The Following:\n'
+                         '1. Add Expense\n'
+                         '2. Get Budget\n'
+                         '3. Set Budget')
+
+    elif session['track_flow'] == 1:
+        if body == '1' or body.lower() == 'add expense':
+            resp.message('What is the name of the expense?')
+            session['track_flow'] = 2
+
+        elif body == '2' or body.lower() == 'get budget':
+            session['track_flow'] = 0
+            budget = db.session.query(Budget.budget).one()[0]
+            remaining_budget = db.session.query(Budget.remaining_budget).one()[0]
+            session['expense']['budget'] = str(budget)
+            session['expense']['remaining_budget'] = str(remaining_budget)
+            resp.message(f" Your budget is: {session['expense'].get('budget')}\n"
+                         f"Your remaining budget is: {session['expense'].get('remaining_budget')}")
+
+        elif body == '3' or body.lower() == 'set budget':
+            resp.message('What budget would you like to set?')
+            session['track_flow'] = 5
+
+
+    elif session['track_flow'] == 2:
+        resp.message('What is the category?')
+        session['expense']['name'] = body
+        session['track_flow'] = 3
+
+    elif session['track_flow'] == 3:
+        resp.message('What is the amount?')
+        session['expense']['category'] = body
+        session['track_flow'] = 4
+
+    elif session['track_flow'] == 4:
+        try:
+            session['expense']['amount'] = float(body)
+            remaining_budget = db.session.query(Budget).first()
+            data = ExpenseTracker(
+                name=session['expense'].get('name'),
+                category=session['expense'].get('category'),
+                amount=session['expense'].get('amount'),
+                date=datetime.today()
+            )
+
+            updated_budget = float(db.session.query(Budget.remaining_budget).one()[0]) - session['expense'].get(
+                'amount')
+            if remaining_budget:
+                remaining_budget.remaining_budget = updated_budget
+                db.session.commit()
+            resp.message(
+                f"Expense Added Successfully To DB:\n"
+                f"Name: {session['expense'].get('name').title()}\n"
+                f"Category: {session['expense'].get('category').title()}\n"
+                f"Amount: {session['expense'].get('amount')}\n"
+                f"Remaining Budget: {updated_budget}"
+
+            )
+            db.session.add(data)
+            db.session.commit()
+
+            session['track_flow'] = 0
+        except ValueError:
+            resp.message('Enter A Number')
+            session['track_flow'] = 3
+
+    elif session['track_flow'] == 5:
+        session['expense']['budget'] = body
+        session['expense']['remaining_budget'] = body
+        budget = Budget.query.first()
+        session['track_flow'] = 0
+
+        if budget:
+            budget.budget = session['expense'].get('budget')
+            budget.remaining_budget = session['expense'].get('remaining_budget')
+            db.session.commit()
+            resp.message(
+                f'New Budget Set: {db.session.query(Budget.budget).one()[0]}\n'
+                f'Remaining Budget: {db.session.query(Budget.remaining_budget).one()[0]}'
+            )
+
+    return str(resp)
+
+
 @app.route('/clear_table', methods=['DELETE'])
 def clear_data():
     meta = db.metadata
@@ -238,9 +343,9 @@ def clear_data():
     db.session.commit()
 
     return jsonify({
-      "Message": "Tables Cleared"
+        "Message": "Tables Cleared"
     })
 
 
 if __name__ == '__main__':
-    app.run(port=8000, debug=True)
+    app.run(port=9000, debug=True)
