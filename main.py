@@ -8,10 +8,14 @@ from pathlib import Path
 from datetime import datetime
 from twilio.twiml.messaging_response import MessagingResponse
 import os
+import asyncio
 from dotenv import load_dotenv
+import time
 
 db_name = Path(__file__).parent / 'expense_tracker.db'
 
+
+# TODO: Fix GitHub
 
 class Base(DeclarativeBase):
     pass
@@ -89,10 +93,13 @@ def update_budget():
 
 
 @app.route('/get_budget', methods=['GET'])
-def get_budget():
+def get_budget(remaining_budget=False, l=False):
     budget = Budget.query.first()
     if budget:
         return jsonify({"Total Budget": budget.budget, 'Remaining Budget': budget.remaining_budget}), 200
+
+    if remaining_budget and budget:
+        return db.session.query(Budget.remaining_budget).one()[0]
     else:
         return jsonify({"message": "No Budget Set"}), 404
 
@@ -234,17 +241,25 @@ def get_expenses():
     })
 
 
+def return_to_menu(dict_, key, resp):
+            dict_[key] = 1
+            return resp.message('1. Add Expense\n'
+                                '2. Get Budget\n'
+                                '3. Set Budget')
+
+
+
 @app.route("/sms", methods=['GET', 'POST'])
 def incoming_sms():
     """Send a dynamic reply to an incoming text message"""
     # Get the message the user sent our Twilio number
     body = request.values.get('Body', None)
+    current = Budget.query.first()
     if 'track_flow' not in session:
         session['track_flow'] = 0
     print(session['track_flow'])
     if 'expense' not in session:
         session['expense'] = {}
-    # TODO: Add queries for budget/remaining_budget once.
     # TODO: Create a response to when the session state returns to 0.
     # Start our TwiML response
     resp = MessagingResponse()
@@ -256,19 +271,29 @@ def incoming_sms():
                          '2. Get Budget\n'
                          '3. Set Budget')
 
+    if 'track_flow' in session and session.get('track_flow', 0) == 0:
+        resp.message('Would you like to add another bill?')
+        session['track_flow'] = 99
+        return_to_menu(session, 'track_flow', resp)
+
+
+
     elif session['track_flow'] == 1:
         if body == '1' or body.lower() == 'add expense':
             resp.message('What is the name of the expense?')
             session['track_flow'] = 2
 
+
+
+
         elif body == '2' or body.lower() == 'get budget':
             session['track_flow'] = 0
-            budget = db.session.query(Budget.budget).one()[0]
-            remaining_budget = db.session.query(Budget.remaining_budget).one()[0]
-            session['expense']['budget'] = str(budget)
-            session['expense']['remaining_budget'] = str(remaining_budget)
+            session['expense']['budget'] = current.budget
+            session['expense']['remaining_budget'] = current.remaining_budget
             resp.message(f" Your budget is: {session['expense'].get('budget')}\n"
                          f"Your remaining budget is: {session['expense'].get('remaining_budget')}")
+            if body[0].lower() == 'y':
+                return_to_menu(session, 'track_flow', resp)
 
         elif body == '3' or body.lower() == 'set budget':
             resp.message('What budget would you like to set?')
@@ -288,7 +313,6 @@ def incoming_sms():
     elif session['track_flow'] == 4:
         try:
             session['expense']['amount'] = float(body)
-            remaining_budget = db.session.query(Budget).first()
             data = ExpenseTracker(
                 name=session['expense'].get('name'),
                 category=session['expense'].get('category'),
@@ -296,21 +320,31 @@ def incoming_sms():
                 date=datetime.today()
             )
 
-            updated_budget = float(db.session.query(Budget.remaining_budget).one()[0]) - session['expense'].get(
-                'amount')
-            if remaining_budget:
-                remaining_budget.remaining_budget = updated_budget
-                db.session.commit()
-            resp.message(
-                f"Expense Added Successfully To DB:\n"
-                f"Name: {session['expense'].get('name').title()}\n"
-                f"Category: {session['expense'].get('category').title()}\n"
-                f"Amount: {session['expense'].get('amount')}\n"
-                f"Remaining Budget: {updated_budget}"
+            if current.remaining_budget > session['expense'].get('amount', 0):
 
-            )
-            db.session.add(data)
-            db.session.commit()
+                current.remaining_budget = current.remaining_budget - session['expense'].get(
+                    'amount', 0)
+
+                resp.message(
+                    f"Expense Added Successfully To DB:\n"
+                    f"Name: {session['expense'].get('name').title()}\n"
+                    f"Category: {session['expense'].get('category').title()}\n"
+                    f"Amount: {session['expense'].get('amount')}\n"
+                    f"Remaining Budget: {current.remaining_budget}"
+
+                )
+                db.session.add(data)
+                db.session.commit()
+
+            else:
+                resp.message('You do not have the budget for this expense!\n'
+                             f'Your Remaining Budget: {current.remaining_budget}\n'
+                             f'The amount of the expense: {session["expense"].get("amount")}\n'
+
+                             f'Please Update Budget!'
+                             )
+
+                session['track_flow'] = 0
 
             session['track_flow'] = 0
         except ValueError:
@@ -318,19 +352,18 @@ def incoming_sms():
             session['track_flow'] = 3
 
     elif session['track_flow'] == 5:
-        session['expense']['budget'] = body
-        session['expense']['remaining_budget'] = body
-        budget = Budget.query.first()
+        new_budget = float(body)
         session['track_flow'] = 0
 
-        if budget:
-            budget.budget = session['expense'].get('budget')
-            budget.remaining_budget = session['expense'].get('remaining_budget')
+        if current:
+            current.budget = new_budget
+            current.remaining_budget = new_budget
             db.session.commit()
             resp.message(
-                f'New Budget Set: {db.session.query(Budget.budget).one()[0]}\n'
-                f'Remaining Budget: {db.session.query(Budget.remaining_budget).one()[0]}'
+                f'New Budget Set: {current.budget}\n'
+                f'Remaining Budget: {current.remaining_budget}'
             )
+            return_to_menu('track_flow', resp)
 
     return str(resp)
 
